@@ -240,6 +240,6 @@ double UpNice(double dx);
 double DownNice(double dx);
 
 /* Convert SYSTEMTIME structure to standard UNIX time */
-time_t TimeFromSystemTime(const SYSTEMTIME *pTime);
+__time64_t TimeFromSystemTime(const SYSTEMTIME *pTime);
 
 #endif		/* #ifndef _WIN32EX_H_LOADED */

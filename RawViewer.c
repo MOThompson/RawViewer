@@ -34,6 +34,8 @@
 /* ------------------------------ */
 #include "resource.h"
 #include "win32ex.h"
+#include "graph.h"
+#include "timer.h"
 
 /* Load camera routines */
 #include "camera.h"							/* Call either DCX or TL versions */
@@ -49,17 +51,27 @@
 #endif
 
 typedef struct _VIEWER_INFO {
-	HWND hdlg;									/* Handle to this dialog box */
-	char pathname[PATH_MAX];				/* pathname being displayed */
-	BOOL valid;									/* Is the data valid? */
-	TL_RAW_FILE_HEADER header;				/* Header information */
-	SHORT *data;								/* Pointer to the data */
-	BITMAPINFOHEADER *bmih;					/* current bitmap of the image */
+	HWND hdlg;												/* Handle to this dialog box */
+	char pathname[PATH_MAX];							/* pathname being displayed */
+	BOOL valid;												/* Is the data valid? */
+	TL_RAW_FILE_HEADER header;							/* Header information */
+	struct {
+		SHORT *data;										/* Pointer to the data */
+		int width, height;								/* Width / height of sensor */
+	} sensor;
+	BITMAPINFOHEADER *bmih;								/* current bitmap of the image */
+	GRAPH_CURVE *red_hist, *green_hist, *blue_hist;
+	int *r_bin, *g_bin, *b_bin;						/* Bin data for pixel counts */
+	double r_gain, g_gain, b_gain;					/* RGB color gains */
 } VIEWER_INFO;
 
+typedef enum {H_RAW=0, H_RAW_GAIN=1, H_BMP=2} HIST;
+
 typedef struct _RENDER_OPTS {
-	BOOL red, green, blue;					/* If TRUE, include in rendering */
-	int gain;									/* 2^x gain values (0,1,2,3 allowed) */
+	BOOL red, green, blue;								/* If TRUE, include in rendering */
+	double r_gain, g_gain, b_gain;					/* Gains for each color channel */
+	int gain;												/* 2^x gain values (0,1,2,3 allowed) */
+	HIST hist;	/* Type of histogram to show */
 } RENDER_OPTS;
 
 #define	WMP_OPEN_FILE	(WM_APP+1)		/* Open a file (in WPARAM) */
@@ -74,6 +86,7 @@ typedef struct _RENDER_OPTS {
 /* My internal function prototypes */
 /* ------------------------------- */
 int ReadRawFile(char *path, TL_RAW_FILE_HEADER *header, SHORT **data);
+int BinData(VIEWER_INFO *viewer, RENDER_OPTS *opts);
 int RenderFrame(VIEWER_INFO *viewer, HWND hwnd, RENDER_OPTS *opts);
 
 /* ------------------------------- */
@@ -110,6 +123,7 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 	/* List of controls which will respond to <ENTER> with a WM_NEXTDLGCTL message */
 	/* Make <ENTER> equivalent to losing focus */
 	static int DfltEnterList[] = {					
+		IDV_RED_GAIN, IDV_GREEN_GAIN, IDV_BLUE_GAIN,
 		ID_NULL };
 
 	VIEWER_INFO *viewer;
@@ -138,29 +152,47 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 			/* Create the information block and save it within this dialog.  Initialize critical parameters */
 			viewer = (VIEWER_INFO *) calloc(1, sizeof(VIEWER_INFO));
+			viewer->r_gain = 2.45; viewer->g_gain = 1.00; viewer->b_gain = 4.0;
 
 			SetWindowLongPtr(hdlg, GWLP_USERDATA, (LONG_PTR) viewer);
 			viewer->hdlg   = hdlg;									/* Have this available for other use */
 
+			/* Set gains and show all channels */
 			SetDlgItemCheck(hdlg, IDC_RED, TRUE);
 			SetDlgItemCheck(hdlg, IDC_GREEN, TRUE);
 			SetDlgItemCheck(hdlg, IDC_BLUE, TRUE);
 			SetRadioButton(hdlg, IDR_GAIN_0, IDR_GAIN_5, IDR_GAIN_0);
 			EnableDlgItem(hdlg, IDB_SAVE, FALSE);
 
-			/* Okay ... see if we should pre-load with an image given on the command line */
-			if (__argc > 1) PostMessage(hdlg, WMP_OPEN_FILE, (WPARAM) __argv[1], 0);
+			/* Set type of Histograms */
+			SetRadioButton(hdlg, IDR_HIST_RAW, IDR_HIST_BMP, IDR_HIST_RAW);
+
+			/* Set default color gains (for RGB render) */
+			SetDlgItemDouble(hdlg, IDV_RED_GAIN,   "%.2f", viewer->r_gain);
+			SendDlgItemMessage(hdlg, IDS_RED_GAIN,    TBM_SETPOS, TRUE, 100 - (int) (20.0*viewer->r_gain+0.5));		/* Gains are 0-5 */
+			SetDlgItemDouble(hdlg, IDV_GREEN_GAIN, "%.2f", viewer->g_gain);
+			SendDlgItemMessage(hdlg, IDS_GREEN_GAIN,  TBM_SETPOS, TRUE, 100 - (int) (20.0*viewer->g_gain+0.5));
+			SetDlgItemDouble(hdlg, IDV_BLUE_GAIN,  "%.2f", viewer->b_gain);
+			SendDlgItemMessage(hdlg, IDS_BLUE_GAIN,   TBM_SETPOS, TRUE, 100 - (int) (20.0*viewer->b_gain+0.5));
+
+			InitializeHistogramCurves(hdlg, viewer, 256);
 
 #define	TIMER_INITIAL_RENDER				(1)
-			SetTimer(hdlg, TIMER_INITIAL_RENDER, 100, NULL);				/* First draw seems to fail */
+			SetTimer(hdlg, TIMER_INITIAL_RENDER, 200, NULL);				/* First draw seems to fail */
 			rcode = TRUE; break;
 
 		case WMP_RENDER:
+			static HIST last_hist = -1;
 			opts.gain  = GetRadioButtonIndex(hdlg, IDR_GAIN_0, IDR_GAIN_5);
 			opts.red   = GetDlgItemCheck(hdlg, IDC_RED);
 			opts.green = GetDlgItemCheck(hdlg, IDC_GREEN);
 			opts.blue  = GetDlgItemCheck(hdlg, IDC_BLUE);
+			opts.r_gain = viewer->r_gain;
+			opts.g_gain = viewer->g_gain;
+			opts.b_gain = viewer->b_gain;
+			opts.hist = GetRadioButtonIndex(hdlg, IDR_HIST_RAW, IDR_HIST_BMP);
 			RenderFrame(viewer, GetDlgItem(hdlg, IDC_IMAGE), &opts);
+			BinData(viewer, &opts);													/* Must be after RenderFrame so RGB valid */
 			rcode = TRUE; break;
 			
 		case WMP_SHOW_INFO:
@@ -193,14 +225,17 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 		case WMP_OPEN_FILE:
 			/* Delete current */
-			if (viewer->bmih != NULL) { free(viewer->bmih); viewer->bmih = NULL; }
-			if (viewer->data != NULL) { free(viewer->data); viewer->data = NULL; }
+			if (viewer->bmih         != NULL) { free(viewer->bmih);         viewer->bmih         = NULL; }
+			if (viewer->sensor.data  != NULL) { free(viewer->sensor.data);  viewer->sensor.data  = NULL; }
 			EnableDlgItem(hdlg, IDB_SAVE, FALSE);
 
 			/* Copy over the filename in wParam */
 			strcpy_m(viewer->pathname, sizeof(viewer->pathname), (char *) wParam);
-			viewer->valid = ReadRawFile(viewer->pathname, &viewer->header, &viewer->data) == 0;
+			viewer->valid = ReadRawFile(viewer->pathname, &viewer->header, &viewer->sensor.data) == 0;
 			if (viewer->valid) {
+				viewer->sensor.height = viewer->header.height;		/* Put these into the header */
+				viewer->sensor.width  = viewer->header.width;
+
 				SendMessage(hdlg, WMP_SHOW_INFO, 0, 0);
 				SendMessage(hdlg, WMP_RENDER, 0, 0);
 				EnableDlgItem(hdlg, IDB_SAVE, TRUE);
@@ -216,7 +251,53 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 			rcode = TRUE; break;
 
 		case WM_TIMER:
-			if (wParam == TIMER_INITIAL_RENDER) { SendMessage(hdlg, WMP_RENDER, 0, 0); KillTimer(hdlg, TIMER_INITIAL_RENDER); }
+			if (wParam == TIMER_INITIAL_RENDER) {
+				/* Okay ... see if we should pre-load with an image given on the command line */
+				if (__argc > 1) SendMessage(hdlg, WMP_OPEN_FILE, (WPARAM) __argv[1], 0);
+				KillTimer(hdlg, TIMER_INITIAL_RENDER);
+			}
+			rcode = TRUE; break;
+
+		case WM_VSCROLL:
+			wID = ID_NULL;							/* Determine unerlying wID and set ichan for set below */
+			if ((HWND) lParam == GetDlgItem(hdlg, IDS_RED_GAIN))    { wID = IDS_RED_GAIN;    ichan = R_CHAN; }
+			if ((HWND) lParam == GetDlgItem(hdlg, IDS_GREEN_GAIN))  { wID = IDS_GREEN_GAIN;	ichan = G_CHAN; }
+			if ((HWND) lParam == GetDlgItem(hdlg, IDS_BLUE_GAIN))   { wID = IDS_BLUE_GAIN;	ichan = B_CHAN; }
+			if (wID != ID_NULL) {
+				static HIRES_TIMER *timer = NULL;
+				static double t_last = 0.0;
+				int ipos;
+
+				if (timer == NULL) timer = HiResTimerReset(NULL, 0.0);
+
+				ipos = -99999;
+				switch (LOWORD(wParam)) {
+					case SB_THUMBPOSITION:									/* Moved manually */
+					case SB_THUMBTRACK:										/* Limit slider updates to 5 Hz */
+						ipos = HIWORD(wParam); break;
+					case SB_LINEDOWN:
+					case SB_LINEUP:
+					case SB_PAGEDOWN:
+					case SB_PAGEUP:
+					case SB_BOTTOM:
+					case SB_TOP:
+					default:
+						ipos = (int) SendDlgItemMessage(hdlg, wID, TBM_GETPOS, 0, 0); break;
+				}
+				if (ipos != -99999) {
+					if (wID == IDS_RED_GAIN) {
+						viewer->r_gain = (100.0-ipos) / 20.0;
+						SetDlgItemDouble(hdlg, IDV_RED_GAIN, "%.2f", viewer->r_gain);
+					} else if (wID == IDS_GREEN_GAIN) {
+						viewer->g_gain = (100.0-ipos) / 20.0;
+						SetDlgItemDouble(hdlg, IDV_GREEN_GAIN, "%.2f", viewer->g_gain);
+					} else if (wID == IDS_BLUE_GAIN) {
+						viewer->b_gain = (100.0-ipos) / 20.0;
+						SetDlgItemDouble(hdlg, IDV_BLUE_GAIN, "%.2f", viewer->b_gain);
+					}
+					SendMessage(hdlg, WMP_RENDER, 0, 0);
+				}
+			}
 			rcode = TRUE; break;
 
 		case WM_COMMAND:
@@ -239,6 +320,7 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 					SendMessage(hdlg, WM_CLOSE, 0, 0);
 					rcode = TRUE; break;
 
+				/* Controls that just modify the image or histogram */
 				case IDC_RED:
 				case IDC_GREEN:
 				case IDC_BLUE:
@@ -248,6 +330,9 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 				case IDR_GAIN_3:
 				case IDR_GAIN_4:
 				case IDR_GAIN_5:
+				case IDR_HIST_RAW:
+				case IDR_HIST_RAW_GAIN:
+				case IDR_HIST_BMP:
 					SendMessage(hdlg, WMP_RENDER, 0, 0);
 					break;
 
@@ -333,6 +418,27 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 					}
 					break;
 					
+				case IDV_RED_GAIN:
+					if (EN_KILLFOCUS == wNotifyCode) {
+						viewer->r_gain = GetConstrainedDouble(hdlg, wID, TRUE, "%.2f", 0.0, 5.0, 1.0);
+						SendDlgItemMessage(hdlg, IDS_RED_GAIN,    TBM_SETPOS, TRUE, 100 - (int) (20.0*viewer->r_gain+0.5));		/* Gains are 0-5 */
+					}
+					break;
+					
+				case IDV_GREEN_GAIN:
+					if (EN_KILLFOCUS == wNotifyCode) {
+						viewer->g_gain = GetConstrainedDouble(hdlg, wID, TRUE, "%.2f", 0.0, 5.0, 1.0);
+						SendDlgItemMessage(hdlg, IDS_GREEN_GAIN,  TBM_SETPOS, TRUE, 100 - (int) (20.0*viewer->g_gain+0.5));
+					}
+					break;
+
+				case IDV_BLUE_GAIN:
+					if (EN_KILLFOCUS == wNotifyCode) {
+						viewer->b_gain = GetConstrainedDouble(hdlg, wID, TRUE, "%.2f", 0.0, 5.0, 1.0);
+						SendDlgItemMessage(hdlg, IDS_BLUE_GAIN,   TBM_SETPOS, TRUE, 100 - (int) (20.0*viewer->b_gain+0.5));
+					}
+					break;
+
 				/* Intentionally unused IDs */
 				case IDC_IMAGE:
 				case IDT_TIMESTAMP:
@@ -361,6 +467,16 @@ int WINAPI WinMain(HINSTANCE hThisInstance, HINSTANCE hPrevInstance, LPSTR lpCmd
 	/* If not done, make sure we are loaded.  Assume safe to call multiply */
 	InitCommonControls();
 	LoadLibrary("RICHED20.DLL");
+
+	/* If this isn't added, get "Access is denied" error when run */
+	fprintf(stderr, "WinMain\n"); fflush(stderr);
+
+	/* See how many arguments there are */
+	for (int i=0; i<__argc; i++) printf("Arg[%d]: %s\n", i, __argv[i]);
+//	fflush(stdout);
+
+	/* Load the class for the graph window */
+	Graph_StartUp(hThisInstance);					/* Initialize the graphics control */
 
 	/* And show the dialog box */
 	hInstance = hThisInstance;
@@ -443,6 +559,197 @@ int ReadRawFile(char *path, TL_RAW_FILE_HEADER *pheader, SHORT **data) {
 
 
 /* ===========================================================================
+-- Generate the pixel count histograms from the raw data
+--
+-- Usage: int BinData(VIEWER_INFO *viewer, RENDER_OPTS *opts);
+--
+-- Inputs: viewer - pointer to structure with an image
+--         opts   - options for rendering
+--           ->hist - type of hisogram desired
+--           ->gain - amount of gain
+--
+-- Output: Fills in the r_bin, g_bin and b_bin arrays 
+--
+-- Return: 0 if successful, !0 on error
+--         1 --> bad data
+--         2 --> invalid value of nbins
+=========================================================================== */
+int BinData(VIEWER_INFO *viewer, RENDER_OPTS *opts) {
+
+	int i,j, idiv,iadd, width, height;
+	int *r_bin, *g_bin, *b_bin;
+	int nbins, gain;
+	SHORT *raw;
+
+	/* Make sure that we actually have data */
+	if (viewer == NULL || ! viewer->valid || viewer->sensor.data == NULL) return 1;
+	nbins = viewer->red_hist->npt;
+	if (nbins < 16 || nbins > 4096) return 2;
+
+	/* Make space for 255 bins and zero it out */
+	r_bin = viewer->r_bin = realloc(viewer->r_bin, nbins*sizeof(*r_bin));	memset(r_bin, 0, nbins*sizeof(*r_bin));
+	g_bin = viewer->g_bin = realloc(viewer->g_bin, nbins*sizeof(*g_bin));	memset(g_bin, 0, nbins*sizeof(*g_bin));
+	b_bin = viewer->b_bin = realloc(viewer->b_bin, nbins*sizeof(*b_bin));	memset(b_bin, 0, nbins*sizeof(*b_bin));
+
+	if (opts->hist == H_RAW || opts->hist == H_RAW_GAIN) {
+		/* Get the parameters */
+		width  = viewer->sensor.width;
+		height = viewer->sensor.height;
+		raw    = viewer->sensor.data;
+
+		/* Deal with gain request if H_RAW_GAIN */
+		gain = (opts->hist == H_RAW || opts->gain >= 5) ? 1 : 0x01 << max(0, min(4, opts->gain));
+
+		/* Go through all the data */
+		idiv = 4096/nbins;
+		iadd = (idiv+1)/2;
+		for (i=0; i<height; i+=2) {
+			for (j=0; j<width; j+=2) {
+				g_bin[ max(0, min(nbins-1, (gain*raw[(i  )*width+j  ]+iadd)/idiv ) ) ]++;
+				r_bin[ max(0, min(nbins-1, (gain*raw[(i  )*width+j+1]+iadd)/idiv ) ) ]++;
+				b_bin[ max(0, min(nbins-1, (gain*raw[(i+1)*width+j  ]+iadd)/idiv ) ) ]++;
+				g_bin[ max(0, min(nbins-1, (gain*raw[(i+1)*width+j+1]+iadd)/idiv ) ) ]++;
+			}
+		}
+
+		/* Transfer the data to the graphs as well */
+		for (i=0; i<nbins; i++) {
+			viewer->red_hist->y[i]   = r_bin[i];
+			viewer->green_hist->y[i] = g_bin[i] / 2.0;			/* Since 2x as many green pixels */
+			viewer->blue_hist->y[i]  = b_bin[i];
+		}
+
+	} else {			/* opts->hist == H_RGB */
+		BITMAPINFOHEADER *bmih;
+		unsigned char *rgb24;
+
+		bmih   = viewer->bmih;
+		rgb24  = ((unsigned char *) bmih) + sizeof(*bmih);
+		width  = bmih->biWidth;
+		height = bmih->biHeight;
+		
+		/* Go through all the data */
+		idiv = 256/nbins;								/* Data only goes to 255 */
+		iadd = idiv/2;									/* Don't want to add if 256 */
+		for (i=0; i<height*width; i+=3) {
+			b_bin[ max(0, min(nbins-1, (rgb24[i+0]+iadd)/idiv)) ]++;
+			g_bin[ max(0, min(nbins-1, (rgb24[i+1]+iadd)/idiv)) ]++;
+			r_bin[ max(0, min(nbins-1, (rgb24[i+2]+iadd)/idiv)) ]++;
+		}
+
+		/* Transfer the data to the graphs as well */
+		for (i=0; i<nbins; i++) {
+			viewer->red_hist->y[i]   = r_bin[i];
+			viewer->green_hist->y[i] = g_bin[i];
+			viewer->blue_hist->y[i]  = b_bin[i];
+		}
+	}
+
+	viewer->red_hist->y[nbins-1] = viewer->green_hist->y[nbins-1] = viewer->blue_hist->y[nbins-1] = 0;
+	viewer->red_hist->modified = viewer->green_hist->modified = viewer->blue_hist->modified = TRUE;
+	viewer->red_hist->visible  = viewer->green_hist->visible  = viewer->blue_hist->visible  = TRUE;
+	SendDlgItemMessage(viewer->hdlg, IDG_HISTOGRAMS, WMP_REDRAW, 0, 0);
+
+#if 0
+	{
+		FILE *funit;
+		funit = fopen("bins.dat", "w");
+		for (i=0; i<nbins; i++) fprintf(funit, "%d %d %d\n", r_bin[i], g_bin[i], b_bin[i]);
+		fclose(funit);
+	}
+#endif
+
+	return 0;
+}
+
+
+int InitializeHistogramCurves(HWND hdlg, VIEWER_INFO *viewer, int nbins) {
+
+	int i, npt;
+	GRAPH_CURVE *cv;
+	GRAPH_SCALES scales;
+	GRAPH_AXIS_PARMS parms;
+
+	/* Initialize the curves for histograms */
+	cv = calloc(sizeof(GRAPH_CURVE), 1);
+	cv->ID = 0;											/* Main curve */
+	strcpy_m(cv->legend, sizeof(cv->legend), "red");
+	cv->master        = TRUE;
+	cv->visible       = TRUE;
+	cv->free_on_clear = FALSE;
+	cv->draw_x_axis   = cv->draw_y_axis   = FALSE;
+	cv->force_scale_x = cv->force_scale_y = FALSE;
+	cv->autoscale_x   = FALSE;	cv->autoscale_y = TRUE;
+	cv->npt = nbins;
+	cv->x = calloc(sizeof(*cv->x), nbins);
+	cv->y = calloc(sizeof(*cv->y), nbins);
+	for (i=0; i<nbins; i++) { cv->x[i] = i; cv->y[i] = 0; }
+	cv->rgb = RGB(255,0,0);
+	viewer->red_hist = cv;
+
+	/* Initialize the green histogram */
+	cv = calloc(sizeof(GRAPH_CURVE), 1);
+	cv->ID = 1;											/* dark curve */
+	strcpy_m(cv->legend, sizeof(cv->legend), "green");
+	cv->master        = FALSE;
+	cv->visible       = TRUE;
+	cv->free_on_clear = FALSE;
+	cv->draw_x_axis   = cv->draw_y_axis   = FALSE;
+	cv->force_scale_x = cv->force_scale_y = FALSE;
+	cv->autoscale_x   = FALSE;	cv->autoscale_y = TRUE;
+	cv->npt = nbins;
+	cv->x = calloc(sizeof(*cv->x), nbins);
+	cv->y = calloc(sizeof(*cv->y), nbins);
+	for (i=0; i<nbins; i++) { cv->x[i] = i; cv->y[i] = 0; }
+	cv->rgb = RGB(0,255,0);
+	viewer->green_hist = cv;
+
+	/* Initialize the blue histogram */
+	cv = calloc(sizeof(GRAPH_CURVE), 1);
+	cv->ID = 2;											/* blue curve */
+	strcpy_m(cv->legend, sizeof(cv->legend), "blue");
+	cv->master        = FALSE;
+	cv->visible       = TRUE;
+	cv->free_on_clear = FALSE;
+	cv->draw_x_axis   = cv->draw_y_axis   = FALSE;
+	cv->force_scale_x = cv->force_scale_y = FALSE;
+	cv->autoscale_x   = FALSE;	cv->autoscale_y = TRUE;
+	cv->npt = nbins;
+	cv->x = calloc(sizeof(*cv->x), nbins);
+	cv->y = calloc(sizeof(*cv->y), nbins);
+	for (i=0; i<nbins; i++) { cv->x[i] = i; cv->y[i] = 0; }
+	cv->rgb = RGB(128,128,255);
+	viewer->blue_hist = cv;
+
+	/* Set up the scales ... have to modify Y each time but X is infrequent */
+	memset(&scales, 0, sizeof(scales));
+	scales.xmin = 0;	scales.xmax = nbins;
+	scales.ymin = 0;  scales.ymax = 10000;
+	scales.autoscale_x = FALSE; scales.force_scale_x = TRUE;   
+	scales.autoscale_y = TRUE;  scales.force_scale_y = FALSE;
+	SendDlgItemMessage(hdlg, IDG_HISTOGRAMS, WMP_SET_SCALES, (WPARAM) &scales, (LPARAM) 0);
+
+	/* Turn off the y lines */
+	memset(&parms, 0, sizeof(parms));
+	parms.suppress_y_grid = parms.suppress_y_ticks = TRUE;
+	SendDlgItemMessage(hdlg, IDG_HISTOGRAMS, WMP_SET_AXIS_PARMS, (WPARAM) &parms, (LPARAM) 0);
+
+	/* Clear the graph, and set the force parameters */
+	SendDlgItemMessage(hdlg, IDG_HISTOGRAMS, WMP_CLEAR, (WPARAM) 0, (LPARAM) 0);
+//	SendDlgItemMessage(hdlg, IDG_HISTOGRAMS, WMP_SET_X_TITLE, (WPARAM) "counts in pixel", (LPARAM) 0);
+//	SendDlgItemMessage(hdlg, IDG_HISTOGRAMS, WMP_SET_Y_TITLE, (WPARAM) "number", (LPARAM) 0);
+	SendDlgItemMessage(hdlg, IDG_HISTOGRAMS, WMP_SET_LABEL_VISIBILITY, 0, 0);
+
+	/* Add all the curves now */
+	SendDlgItemMessage(hdlg, IDG_HISTOGRAMS,   WMP_ADD_CURVE, (WPARAM) viewer->red_hist,    (LPARAM) 0);
+	SendDlgItemMessage(hdlg, IDG_HISTOGRAMS,   WMP_ADD_CURVE, (WPARAM) viewer->green_hist,  (LPARAM) 0);
+	SendDlgItemMessage(hdlg, IDG_HISTOGRAMS,   WMP_ADD_CURVE, (WPARAM) viewer->blue_hist,   (LPARAM) 0);
+
+	return 0;
+}
+
+
+/* ===========================================================================
 -- Generate a device independent bitmap (DIB) from image and options
 -- 
 -- Usage: BITMAPINFOHEADER *CreateDIB(VIEWER_INFO *viewer, RENDER_OPTS *opts);
@@ -469,16 +776,16 @@ BITMAPINFOHEADER *CreateDIB(VIEWER_INFO *viewer, RENDER_OPTS *opts) {
 	int my_rc;
 	unsigned char *rgb24;
 	BOOL rchan, gchan, bchan, logmode;
-	TL_RAW_FILE_HEADER *header;
+	double r,g,b;												/* Channel gains */
 	SHORT *raw;
 
 	/* Have to have data, both a header and real data numbers */
-	if (viewer == NULL || ! viewer->valid || viewer->data == NULL) return NULL;
+	if (viewer == NULL || ! viewer->valid || viewer->sensor.data == NULL) return NULL;
 
-	/* Figure out the size */
-	header = &viewer->header;
-	raw    =  viewer->data;
-	width = header->width; height = header->height;					/* RGB is 1/2 resolution */
+	/* Get pointer to actual sensor data and size */
+	raw    =  viewer->sensor.data;
+	width  = viewer->sensor.width;
+	height = viewer->sensor.height;		/* RGB will be 1/2 resolution */
 
 	/* Allocate the structure */
 	ineed = sizeof(*bmih)+3*width/2*height/2;
@@ -498,16 +805,17 @@ BITMAPINFOHEADER *CreateDIB(VIEWER_INFO *viewer, RENDER_OPTS *opts) {
 	}
 
 	/* Convert to true RGB format */
+	r = opts->r_gain; g = opts->g_gain; b = opts->b_gain;
 	for (i=0; i<height; i+=2) {
 		for (j=0; j<width; j+=2) {
 			if (! logmode) {
-				*(rgb24++) = ! bchan ? 0 : min(255, ( raw[(i+1)*width+j] + inorm/2) / inorm);								/* Blue channel */
-				*(rgb24++) = ! gchan ? 0 : min(255, (raw[i*width+j] + raw[(i+1)*width+1] + inorm) / 2 / inorm);		/* Green average */
-				*(rgb24++) = ! rchan ? 0 : min(255, ( raw[i*width+j+1] + inorm/2) / inorm);								/* Red channel */
+				*(rgb24++) = ! bchan ? 0 : min(255, (int) (b * ( (raw[(i+1)*width+j] + inorm/2) / inorm) ));			/* Blue channel */
+				*(rgb24++) = ! gchan ? 0 : min(255, (int) (g * ( (raw[i*width+j] + raw[(i+1)*width+j+1] + inorm) / 2 / inorm)));	/* Green average */
+				*(rgb24++) = ! rchan ? 0 : min(255, (int) (r * ( (raw[i*width+j+1] + inorm/2) / inorm) ));			/* Red channel */
 			} else {
-				*(rgb24++) = ! bchan ? 0 : (int) (30.658*log(max(1,raw[(i+1)*width+j])) + 0.5);							/* Blue channel */
-				*(rgb24++) = ! gchan ? 0 : (int) (28.299*log(max(1,raw[i*width+j] + raw[(i+1)*width+1])) + 0.5);	/* Green average */
-				*(rgb24++) = ! rchan ? 0 : (int) (30.658*log(max(1,raw[i*width+j+1])) + 0.5);								/* Red channel */
+				*(rgb24++) = ! bchan ? 0 : (int) (30.658*log(max(1,b*raw[(i+1)*width+j])));								/* Blue channel */
+				*(rgb24++) = ! gchan ? 0 : (int) (28.299*log(max(1,g*(raw[i*width+j] + raw[(i+1)*width+j+1]))));	/* Green average */
+				*(rgb24++) = ! rchan ? 0 : (int) (30.658*log(max(1,r*raw[i*width+j+1])));									/* Red channel */
 			}
 		}
 	}
@@ -561,7 +869,7 @@ int RenderFrame(VIEWER_INFO *viewer, HWND hwnd, RENDER_OPTS *opts) {
 	RECT		 Client;
 
 	/* Make sure we have data to show and somewhere to show it */
-	if (viewer == NULL || ! viewer->valid || viewer->data == NULL || ! IsWindow(hwnd)) return 1;
+	if (viewer == NULL || ! viewer->valid || viewer->sensor.data == NULL || ! IsWindow(hwnd)) return 1;
 
 	/* Free previous bitmap if in the structure */
 	if (viewer->bmih != NULL) { free(viewer->bmih); viewer->bmih = NULL; }

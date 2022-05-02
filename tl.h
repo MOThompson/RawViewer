@@ -5,9 +5,11 @@
 /* Maximum number of threads that can request a signal when new frame available */
 #define	TL_MAX_SIGNALS				(10)
 #define	TL_MAX_RING_SIZE			(1000)
-#define	TL_IMAGE_ACCESS_TIMEOUT	(200)		/* Never delay for more than 200 ms (ensure 5 fps) for access to image buffers */
+#define	TL_IMAGE_ACCESS_TIMEOUT	(200)			/* Never delay for more than 200 ms (ensure 5 fps) for access to image buffers */
 
 #define	TL_CAMERA_MAGIC	0x8A46
+
+FILE *tl_debug;										/* If !NULL, pointer to some logfile for debugging */
 
 #pragma pack(4)
 typedef struct _TL_IMAGE {
@@ -19,7 +21,7 @@ typedef struct _TL_IMAGE {
 	int imageID;										/* Unique ID of image (# since start) */
 	unsigned short *raw;								/* Buffer with the raw data		*/
 	double camera_time;								/* Camera pixel clock timestamp	*/
-	time_t timestamp;									/* time() value						*/
+	__time64_t timestamp;							/* time() value						*/
 	SYSTEMTIME system_time;							/* Include millisecond time		*/
 	double dB_gain;									/* Master gain in dB					*/
 	double ms_expose;									/* ms exposure (also us_expose)	*/
@@ -34,7 +36,7 @@ typedef struct _TL_RAW_FILE_HEADER {
 	int major_version, minor_version;	/* Header version (currently 1.0)							*/
 	double ms_expose;							/* Exposure time in ms											*/
 	double dB_gain;							/* Gain in dB for camera (RGB don't matter)				*/
-	time_t timestamp;							/* time() of image capture (relative Jan 1, 1970)		*/
+	__time64_t timestamp;					/* time() of image capture (relative Jan 1, 1970)		*/
 	double camera_time;						/* Image time based on pixel clock (arbitrary zero)	*/
 	int year, month, day;					/* Date of capture (human readable, 2024.02.29)			*/
 	int hour, min, sec, ms;					/* Time of capture (human readable, 18:00:59.372)		*/

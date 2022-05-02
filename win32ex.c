@@ -1238,7 +1238,7 @@ int SetDlgRTFText(HWND hdlg, int control, char *msg, int fSize, int colorindex) 
 /* ===========================================================================
 -- Convert from SYSTEMTIME structure to UNIX time (time_t)
 =========================================================================== */
-time_t TimeFromSystemTime(const SYSTEMTIME *pTime) {
+__time64_t TimeFromSystemTime(const SYSTEMTIME *pTime) {
 	struct tm tm;
 
 	memset(&tm, 0, sizeof(tm));
@@ -1251,5 +1251,5 @@ time_t TimeFromSystemTime(const SYSTEMTIME *pTime) {
 	tm.tm_sec  = pTime->wSecond;
 	tm.tm_isdst = -1;							/* Let system determine if DST */
 
-	return mktime(&tm);
+	return _mktime64(&tm);
 }

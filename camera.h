@@ -9,7 +9,7 @@ typedef enum _CAMERA_TYPE {CAMERA_UNKNOWN=0, CAMERA_DCX=1, CAMERA_TL=2} CAMERA_T
 typedef struct _IMAGE_INFO {			/* NOTE: interpretation of values depends on camera type */ 
 	CAMERA_TYPE type;						/* 0=unknown, 1=DCX, 2=TL					*/
 	uint32_t frame;						/* Which frame within the ring buffer	*/
-	time_t timestamp;						/* Standard UNIX time of image capture	*/
+	__time64_t timestamp;				/* Standard UNIX time of image capture (64 bit) */
 	double camera_time;					/* Time of capture from camera clock - units are seconds but epoch undefined */
 	uint32_t width, height;				/* Image width and height					*/
 	uint32_t memory_pitch;				/* Bytes between each rows (allocate memory pitch*height) */
