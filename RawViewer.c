@@ -20,6 +20,11 @@
 #include <signal.h>
 #include <stdint.h>						 /* C99 extension to get known width integers */
 
+#undef _POSIX_
+	#include <io.h>						/* Must get _findfirst defined */
+	#include <process.h>					/* And _beginthread */
+#define _POSIX_
+
 /* Standard Windows libraries */
 #ifdef NEED_WINDOWS_LIBRARY
 #define STRICT							/* define before including windows.h for stricter type checking */
@@ -74,9 +79,10 @@ typedef struct _RENDER_OPTS {
 	HIST hist;	/* Type of histogram to show */
 } RENDER_OPTS;
 
-#define	WMP_OPEN_FILE	(WM_APP+1)		/* Open a file (in WPARAM) */
-#define	WMP_SHOW_INFO	(WM_APP+2)		/* Show the header file info */
-#define	WMP_RENDER		(WM_APP+3)		/* Create a bitmap and render */
+#define	WMP_OPEN_FILE			(WM_APP+1)		/* Open a file (in WPARAM) */
+#define	WMP_SHOW_INFO			(WM_APP+2)		/* Show the header file info */
+#define	WMP_RENDER				(WM_APP+3)		/* Create a bitmap and render */
+#define	WMP_ENABLE_DIR_WALK	(WM_APP+4)		/* Enable the forward/back arrows */
 
 /* ------------------------------- */
 /* My external function prototypes */
@@ -103,6 +109,90 @@ VIEWER_INFO *viewer = NULL;
 /* Locally defined global vars     */
 /* ------------------------------- */
 	
+/* ===========================================================================
+-- Routine to generate a list of .raw files in the current directory.
+-- Will enable scrolling left and right through images once established.
+=========================================================================== */
+#define DIR_SEARCH_MAGIC	(0x1845)
+typedef struct _DIR_SEARCH_INFO {
+	int magic;
+	char path[PATH_MAX];
+	HWND hdlg;
+} DIR_SEARCH_INFO;
+	
+typedef char IMAGES[PATH_MAX];
+
+int image_count=0, image_alloc=0;
+int image_active=0;										/* Which images is currently displayed */
+IMAGES *images = NULL;
+
+static void DirectoryScanThread(void *args) {
+	static char *rname="DirectoryScanThread";
+
+	int i;
+	intptr_t hdir;										/* Open directory */
+	struct _finddatai64_t findbuf;				/* Information from FindFirst */
+	DIR_SEARCH_INFO *info;
+	char *path, *aptr, dir[PATH_MAX], fname[PATH_MAX], search[PATH_MAX];
+
+	/* Quick error checks */
+	if (args == NULL) return;
+	info = (DIR_SEARCH_INFO *) args;
+	if (info->magic != DIR_SEARCH_MAGIC) return;
+	if (*info->path == '\0') { free(info); return; }
+	
+	/* If multiple call, release previous results (probably a new directory) */
+	if (images != NULL) {
+		image_count = image_active = 0;										/* Clear number and current */
+		SendMessage(info->hdlg, WMP_ENABLE_DIR_WALK, 0, 0);			/* DIsable for the moment */
+	}
+
+	/* Parse the passed argument to find the directory (default ./) and the filename */
+	strcpy_s(dir, sizeof(dir), info->path);
+	aptr = dir+strlen(dir)-1;						/* Last character */
+	while (aptr != dir && strchr("\\/:", *aptr) == NULL) aptr--;
+	if (strchr("\\/:", *aptr) != NULL) {									/* Did terminate on a directory marker */
+		strcpy_s(fname, sizeof(fname), aptr+1);
+	} else {
+		strcpy_s(fname, sizeof(fname), aptr);
+	}
+	*aptr = '\0';										/* End of diretory */
+	if (*dir == '\0') strcpy_s(dir, sizeof(dir), ".");
+	sprintf_s(search, sizeof(search), "%s/*.raw", dir);
+
+	/* open the directory ... potentially finding no images */
+	if ( (hdir = _findfirst64(search, &findbuf)) >= 0) {
+		for (i=0; ; i++) {
+			/* Find the next one */
+			if (i != 0 && _findnext64(hdir, &findbuf) != 0) break;		/* First already loaded */
+
+			/* Make space */
+			if (image_count >= image_alloc) {
+				image_alloc += 100;
+				images = realloc(images, sizeof(*images)*image_alloc);
+			}
+
+			/* Set the filename */
+			memset(images+image_count, 0, sizeof(*images));
+			sprintf_s(images[image_count], sizeof(images[image_count]), "%s/%s", dir, findbuf.name);
+			image_count++;
+
+			/* Is this the one we are currently viewing? */
+			if (stricmp(findbuf.name, fname) == 0) image_active = i;
+		}
+		_findclose(hdir);
+		SendMessage(info->hdlg, WMP_ENABLE_DIR_WALK, 0, 1);		/* Enable now */
+	}
+	free(info);																	/* My responsibility to free when done */
+
+	/* Just for debugging */
+//	fprintf(stderr, " path: %s\n dir: %s\n fname: %s\n search: %s\n", info->path, dir, fname, search); fflush(stderr);
+//	fprintf(stderr, " icount: %d  ialloc: %d  iactive: %d  file: %s\n", image_count, image_alloc, image_active, images[image_active]);
+//	fflush(stderr);
+
+	return;
+}
+
 /* ===========================================================================
 =========================================================================== */
 #define	ID_NULL		(-1)
@@ -176,7 +266,7 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 			SendDlgItemMessage(hdlg, IDS_BLUE_GAIN,   TBM_SETPOS, TRUE, 100 - (int) (20.0*viewer->b_gain+0.5));
 
 			InitializeHistogramCurves(hdlg, viewer, 256);
-
+			
 #define	TIMER_INITIAL_RENDER				(1)
 			SetTimer(hdlg, TIMER_INITIAL_RENDER, 200, NULL);				/* First draw seems to fail */
 			rcode = TRUE; break;
@@ -223,6 +313,11 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 			}
 			rcode = TRUE; break;
 
+		case WMP_ENABLE_DIR_WALK:
+			EnableDlgItem(hdlg, IDB_NEXT, lParam);
+			EnableDlgItem(hdlg, IDB_PREV, lParam);
+			rcode = TRUE; break;
+			
 		case WMP_OPEN_FILE:
 			/* Delete current */
 			if (viewer->bmih         != NULL) { free(viewer->bmih);         viewer->bmih         = NULL; }
@@ -231,6 +326,18 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 			/* Copy over the filename in wParam */
 			strcpy_m(viewer->pathname, sizeof(viewer->pathname), (char *) wParam);
+
+			/* For first images (or if reset by OpenDialogBox), start a thread to create all .raw files in the directory */
+			if (image_count == 0) {
+				DIR_SEARCH_INFO *info;
+				info = calloc(1, sizeof(*info));
+				info->magic = DIR_SEARCH_MAGIC;
+				info->hdlg  = hdlg;
+				strcpy_s(info->path, sizeof(info->path), viewer->pathname);
+				_beginthread(DirectoryScanThread, 0, info);
+			}
+
+			/* Read the file and display */
 			viewer->valid = ReadRawFile(viewer->pathname, &viewer->header, &viewer->sensor.data) == 0;
 			if (viewer->valid) {
 				viewer->sensor.height = viewer->header.height;		/* Put these into the header */
@@ -336,8 +443,22 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 					SendMessage(hdlg, WMP_RENDER, 0, 0);
 					break;
 
+				case IDB_NEXT:
+					if (images != NULL && image_count > 0) {
+						image_active++; if (image_active >= image_count) image_active = 0;
+						SendMessage(hdlg, WMP_OPEN_FILE, (WPARAM) images[image_active], 0);
+					}
+					break;
+				case IDB_PREV:
+					if (images != NULL && image_count > 0) {
+						image_active--; if (image_active < 0) image_active = image_count-1;
+						SendMessage(hdlg, WMP_OPEN_FILE, (WPARAM) images[image_active], 0);
+					}
+					break;
+
 				case IDB_OPEN:
 					strcpy_m(pathname, sizeof(pathname), viewer->pathname);	/* Maybe empty, but that's okay for open */
+					*pathname = '\0';
 					ofn.lStructSize       = sizeof(OPENFILENAME);
 					ofn.hwndOwner         = hdlg;
 					ofn.lpstrTitle        = "Open RAW image file";
@@ -345,7 +466,7 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 					ofn.lpstrCustomFilter = NULL;
 					ofn.nMaxCustFilter    = 0;
 					ofn.nFilterIndex      = 1;
-					ofn.lpstrFile         = pathname;		/* Full path */
+					ofn.lpstrFile         = pathname;				/* Full path */
 					ofn.nMaxFile          = sizeof(pathname);
 					ofn.lpstrFileTitle    = NULL;						/* Partial path */
 					ofn.nMaxFileTitle     = 0;
@@ -354,12 +475,16 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 					ofn.Flags = OFN_FILEMUSTEXIST | OFN_LONGNAMES | OFN_NOCHANGEDIR | OFN_HIDEREADONLY;
 
 					/* Query a filename ... if abandoned, just return now with no complaints */
-					if (! GetOpenFileName(&ofn)) break;
+					if (! GetOpenFileName(&ofn)) {
+						fprintf(stderr, "GetOpenFileName failed\n"); fflush(stderr);
+						break;
+					}
 
 					/* Save the directory for the next time */
 					strcpy_m(local_dir, sizeof(local_dir), pathname);
-					local_dir[ofn.nFileOffset-1] = '\0';					/* Save for next time! */
+					local_dir[ofn.nFileOffset-1] = '\0';							/* Save for next time! */
 
+					image_count = 0;														/* Reset for a new directory search */
 					SendMessage(hdlg, WMP_OPEN_FILE, (WPARAM) pathname, 0);
 					break;
 
@@ -473,7 +598,7 @@ int WINAPI WinMain(HINSTANCE hThisInstance, HINSTANCE hPrevInstance, LPSTR lpCmd
 
 	/* See how many arguments there are */
 	for (int i=0; i<__argc; i++) printf("Arg[%d]: %s\n", i, __argv[i]);
-//	fflush(stdout);
+	fflush(stdout);
 
 	/* Load the class for the graph window */
 	Graph_StartUp(hThisInstance);					/* Initialize the graphics control */

@@ -75,6 +75,8 @@ BEGIN
     PUSHBUTTON      "Open ...",IDB_OPEN,6,295,50,14
     PUSHBUTTON      "Save BMP ...",IDB_SAVE,62,295,50,14
     CONTROL         "",IDC_IMAGE,"Static",SS_BLACKFRAME | SS_SUNKEN,200,9,480,300
+    PUSHBUTTON      "<",IDB_PREV,161,295,15,14,WS_DISABLED
+    PUSHBUTTON      ">",IDB_NEXT,179,295,15,14,WS_DISABLED | NOT WS_TABSTOP
 END
 
 
@@ -175,6 +177,16 @@ VIEWER_DIALOG AFX_DIALOG_LAYOUT
 BEGIN
     0
 END
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Icon
+//
+
+// Icon with lowest ID value placed first to ensure application icon
+// remains consistent on all systems.
+IDI_ICON1               ICON                    "RawViewer.ico"
 
 
 /////////////////////////////////////////////////////////////////////////////
