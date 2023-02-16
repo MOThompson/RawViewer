@@ -26,6 +26,7 @@
 #define IDR_GAIN_5                      1016
 #define IDB_OPEN                        1017
 #define IDB_SAVE                        1018
+#define IDB_SAVE_AS_BITMAP              1018
 #define IDR_HIST_RAW                    1019
 #define IDR_HIST_RAW_GAIN               1020
 #define IDR_HIST_BMP                    1021
@@ -37,8 +38,10 @@
 #define IDV_BLUE_GAIN                   1027
 #define IDG_HISTOGRAMS                  1028
 #define IDB_PREV                        1029
-#define IDB_PREV2                       1030
 #define IDB_NEXT                        1030
+#define IDB_RGB                         1033
+#define IDC_BUTTON2                     1034
+#define IDB_NEUTRAL                     1034
 #define IDC_STATIC                      -1
 
 // Next default values for new objects
@@ -47,7 +50,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        104
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1030
+#define _APS_NEXT_CONTROL_VALUE         1034
 #define _APS_NEXT_SYMED_VALUE           110
 #endif
 #endif

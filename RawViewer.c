@@ -174,7 +174,7 @@ static void DirectoryScanThread(void *args) {
 
 			/* Set the filename */
 			memset(images+image_count, 0, sizeof(*images));
-			sprintf_s(images[image_count], sizeof(images[image_count]), "%s/%s", dir, findbuf.name);
+			sprintf_s(images[image_count], sizeof(images[image_count]), "%s\\%s", dir, findbuf.name);
 			image_count++;
 
 			/* Is this the one we are currently viewing? */
@@ -252,7 +252,7 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 			SetDlgItemCheck(hdlg, IDC_GREEN, TRUE);
 			SetDlgItemCheck(hdlg, IDC_BLUE, TRUE);
 			SetRadioButton(hdlg, IDR_GAIN_0, IDR_GAIN_5, IDR_GAIN_0);
-			EnableDlgItem(hdlg, IDB_SAVE, FALSE);
+			EnableDlgItem(hdlg, IDB_SAVE_AS_BITMAP, FALSE);
 
 			/* Set type of Histograms */
 			SetRadioButton(hdlg, IDR_HIST_RAW, IDR_HIST_BMP, IDR_HIST_RAW);
@@ -322,7 +322,7 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 			/* Delete current */
 			if (viewer->bmih         != NULL) { free(viewer->bmih);         viewer->bmih         = NULL; }
 			if (viewer->sensor.data  != NULL) { free(viewer->sensor.data);  viewer->sensor.data  = NULL; }
-			EnableDlgItem(hdlg, IDB_SAVE, FALSE);
+			EnableDlgItem(hdlg, IDB_SAVE_AS_BITMAP, FALSE);
 
 			/* Copy over the filename in wParam */
 			strcpy_m(viewer->pathname, sizeof(viewer->pathname), (char *) wParam);
@@ -345,7 +345,7 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 
 				SendMessage(hdlg, WMP_SHOW_INFO, 0, 0);
 				SendMessage(hdlg, WMP_RENDER, 0, 0);
-				EnableDlgItem(hdlg, IDB_SAVE, TRUE);
+				EnableDlgItem(hdlg, IDB_SAVE_AS_BITMAP, TRUE);
 			}
 			break;
 
@@ -443,19 +443,6 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 					SendMessage(hdlg, WMP_RENDER, 0, 0);
 					break;
 
-				case IDB_NEXT:
-					if (images != NULL && image_count > 0) {
-						image_active++; if (image_active >= image_count) image_active = 0;
-						SendMessage(hdlg, WMP_OPEN_FILE, (WPARAM) images[image_active], 0);
-					}
-					break;
-				case IDB_PREV:
-					if (images != NULL && image_count > 0) {
-						image_active--; if (image_active < 0) image_active = image_count-1;
-						SendMessage(hdlg, WMP_OPEN_FILE, (WPARAM) images[image_active], 0);
-					}
-					break;
-
 				case IDB_OPEN:
 					strcpy_m(pathname, sizeof(pathname), viewer->pathname);	/* Maybe empty, but that's okay for open */
 					*pathname = '\0';
@@ -488,7 +475,7 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 					SendMessage(hdlg, WMP_OPEN_FILE, (WPARAM) pathname, 0);
 					break;
 
-				case IDB_SAVE:
+				case IDB_SAVE_AS_BITMAP:
 					if (! viewer->valid || viewer->bmih == NULL) { 
 						Beep(300, 200); break;
 					} else {
@@ -501,6 +488,7 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 						if (strlen(pathname) > 4) {											/* Try to strip the .raw extension */
 							if (_stricmp(pathname+strlen(pathname)-4, ".raw") == 0) pathname[strlen(pathname)-4] = '\0';
 						}
+						memset(&ofn, 0, sizeof(ofn));
 						ofn.lStructSize       = sizeof(ofn);
 						ofn.hwndOwner         = hdlg;
 						ofn.lpstrTitle        = "Save as BMP image";
@@ -528,7 +516,7 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 						isize = sizeof(*bmih)+3*bmih->biWidth*bmih->biHeight;
 
 						/* Create the file header */
-						memset(&bmfh, 0, sizeof(bmfh));	
+						memset(&bmfh, 0, sizeof(bmfh));
 						bmfh.bfType = 19778;
 						bmfh.bfSize = sizeof(bmfh)+isize;
 						bmfh.bfOffBits = sizeof(bmfh)+sizeof(*bmih);
@@ -547,6 +535,7 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 					if (EN_KILLFOCUS == wNotifyCode) {
 						viewer->r_gain = GetConstrainedDouble(hdlg, wID, TRUE, "%.2f", 0.0, 5.0, 1.0);
 						SendDlgItemMessage(hdlg, IDS_RED_GAIN,    TBM_SETPOS, TRUE, 100 - (int) (20.0*viewer->r_gain+0.5));		/* Gains are 0-5 */
+						SendMessage(hdlg, WMP_RENDER, 0, 0);
 					}
 					break;
 					
@@ -554,6 +543,7 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 					if (EN_KILLFOCUS == wNotifyCode) {
 						viewer->g_gain = GetConstrainedDouble(hdlg, wID, TRUE, "%.2f", 0.0, 5.0, 1.0);
 						SendDlgItemMessage(hdlg, IDS_GREEN_GAIN,  TBM_SETPOS, TRUE, 100 - (int) (20.0*viewer->g_gain+0.5));
+						SendMessage(hdlg, WMP_RENDER, 0, 0);
 					}
 					break;
 
@@ -561,6 +551,37 @@ BOOL CALLBACK ViewerDlgProc(HWND hdlg, UINT msg, WPARAM wParam, LPARAM lParam) {
 					if (EN_KILLFOCUS == wNotifyCode) {
 						viewer->b_gain = GetConstrainedDouble(hdlg, wID, TRUE, "%.2f", 0.0, 5.0, 1.0);
 						SendDlgItemMessage(hdlg, IDS_BLUE_GAIN,   TBM_SETPOS, TRUE, 100 - (int) (20.0*viewer->b_gain+0.5));
+						SendMessage(hdlg, WMP_RENDER, 0, 0);
+					}
+					break;
+
+				/* Set gains to default values or neutral (all 1) */
+				case IDB_RGB:
+				case IDB_NEUTRAL:
+					if (wID == IDB_RGB) {
+						viewer->r_gain = 2.45; viewer->g_gain = 1.00; viewer->b_gain = 4.0;			/* Reset defaults */
+					} else {
+						viewer->r_gain = viewer->g_gain = viewer->b_gain = 1.00;							/* All neutral */
+					}
+					SetDlgItemDouble(hdlg, IDV_RED_GAIN,   "%.2f", viewer->r_gain);
+					SetDlgItemDouble(hdlg, IDV_GREEN_GAIN, "%.2f", viewer->g_gain);
+					SetDlgItemDouble(hdlg, IDV_BLUE_GAIN,  "%.2f", viewer->b_gain);
+					SendDlgItemMessage(hdlg, IDS_RED_GAIN,    TBM_SETPOS, TRUE, 100 - (int) (20.0*viewer->r_gain+0.5));		/* Gains are 0-5 */
+					SendDlgItemMessage(hdlg, IDS_GREEN_GAIN,  TBM_SETPOS, TRUE, 100 - (int) (20.0*viewer->g_gain+0.5));
+					SendDlgItemMessage(hdlg, IDS_BLUE_GAIN,   TBM_SETPOS, TRUE, 100 - (int) (20.0*viewer->b_gain+0.5));
+					SendMessage(hdlg, WMP_RENDER, 0, 0);
+					rcode = TRUE; break;
+
+				case IDB_NEXT:
+					if (images != NULL && image_count > 0) {
+						image_active++; if (image_active >= image_count) image_active = 0;
+						SendMessage(hdlg, WMP_OPEN_FILE, (WPARAM) images[image_active], 0);
+					}
+					break;
+				case IDB_PREV:
+					if (images != NULL && image_count > 0) {
+						image_active--; if (image_active < 0) image_active = image_count-1;
+						SendMessage(hdlg, WMP_OPEN_FILE, (WPARAM) images[image_active], 0);
 					}
 					break;
 

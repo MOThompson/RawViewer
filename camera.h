@@ -2,6 +2,8 @@
 
 #define	CAMERA_LOADED
 
+int nskip_rate_ms;
+
 /* Note: The structures here are also used by the client/server */
 typedef enum _CAMERA_TYPE {CAMERA_UNKNOWN=0, CAMERA_DCX=1, CAMERA_TL=2} CAMERA_TYPE;
 
@@ -116,13 +118,16 @@ double Camera_GetGamma(WND_INFO *wnd);
 
 typedef enum {M_CHAN=0, R_CHAN=1, G_CHAN=2, B_CHAN=3} GAIN_CHANNEL;
 typedef enum {IS_SLIDER, IS_VALUE} ENTRY_TYPE;
+typedef enum {RGB_GAIN, NEUTRAL_GAIN} GAIN_RESET_MODE;
 int Camera_SetGains(WND_INFO *wnd, GAIN_CHANNEL channel, ENTRY_TYPE entry, double value);
 int Camera_GetGains(WND_INFO *wnd, double values[4], double slider[4]);
-int Camera_ResetGains(WND_INFO *wnd);
+int Camera_ResetGains(WND_INFO *wnd, GAIN_RESET_MODE rgb);
 
 double Camera_GetFPSActual(WND_INFO *wnd);
 double Camera_SetFPSControl(WND_INFO *wnd, double  rate);
 double Camera_GetFPSControl(WND_INFO *wnd);
+double Camera_GetFPSLimit(WND_INFO *wnd);
+double Camera_SetFPSLimit(WND_INFO *wnd, double fps);
 
 COLOR_CORRECT Camera_GetColorCorrection(WND_INFO *wnd, double *rval);
 COLOR_CORRECT Camera_SetColorCorrection(WND_INFO *wnd, COLOR_CORRECT mode, double rval);

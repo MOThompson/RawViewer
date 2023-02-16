@@ -9,8 +9,6 @@
 
 #define	TL_CAMERA_MAGIC	0x8A46
 
-FILE *tl_debug;										/* If !NULL, pointer to some logfile for debugging */
-
 #pragma pack(4)
 typedef struct _TL_IMAGE {
 	int index;											/* Index of this buffer (frame)	*/
@@ -75,9 +73,21 @@ typedef struct _TL_RAW_FILE_HEADER {
 		float color_correction[9];							/* Color correction matrix			*/
 		float white_balance[9];								/* Default white balance matrix	*/
 
-		int bit_depth;											/* Bit depth							*/
-		int width, height;									/* Image size							*/
+		/* Sensor size information */
+		int sensor_height, sensor_width;					/* Sensor dimensions */
 		double pixel_height_um, pixel_width_um;		/* Pixel size in um					*/
+
+		/* Image information (ROI dependent) */
+		struct {
+			int ulx, uly;										/* Upper left point					*/
+			int lrx, lry;										/* Lower right point					*/
+			int dx, dy;											/* ROI offset from center			*/
+			struct {
+				int x,y;
+			} ul_min, ul_max, lr_min, lr_max;
+		} roi;
+		int width, height;									/* Image size							*/
+		int bit_depth;											/* Bit depth							*/
 		
 		BOOL bGainControl;									/* Has master gain control?		*/
 		double db_min, db_max;								/* Min/max gain in dB */
@@ -89,15 +99,20 @@ typedef struct _TL_RAW_FILE_HEADER {
 		
 		BOOL bFrameRateControl;								/* Is framerate control possible	*/
 		double fps_min, fps_max;							/* Min and max frame rate			*/
-		
+		double fps_limit;										/* Limit processing rate of images */
+
 		int clock_Hz;											/* Camera clock frequency (or 0)	*/
 		
+		HIRES_TIMER *timer;									/* Timer to following image time	*/
+		double t_image;										/* Time of last processed image	*/
+
 		int pixel_bytes;										/* Number of bytes per pixel		*/
 		size_t image_bytes;									/* Number of bytes in an image	*/
 		void *color_processor;
 		BOOL IsSensorColor;									/* TRUE color, FALSE monochrome	*/
 		
 		HANDLE image_mutex;									/* Access to modify/use data		*/
+		int suspend_image_processing;						/* If !0, don't process images	*/
 		
 		TRIGGER_INFO trigger;								/* Trigger details					*/
 
@@ -144,6 +159,7 @@ int tl_camera_count;
 /* Functions */
 int TL_Initialize(void);
 int TL_SetDebug(BOOL debug);
+int TL_SetDebugLog(FILE *fdebug);
 int TL_Shutdown(void);
 
 /* Find  initializes structures with minimal resources  */
@@ -154,6 +170,8 @@ TL_CAMERA *TL_FindCamera(char *ID, int *rcode);
 int TL_ForgetCamera(TL_CAMERA *tl);
 int TL_OpenCamera(TL_CAMERA *tl, int nBuf);
 int TL_CloseCamera(TL_CAMERA *tl);
+int TL_SetROIMode(TL_CAMERA *tl, int mode);
+int TL_SetROI(TL_CAMERA *tl, int ulx, int uly, int lrx, int lry);
 
 int TL_GetCameraName(TL_CAMERA *tl, char *name, size_t length);
 int TL_SetCameraName(TL_CAMERA *tl, char *name);
@@ -203,6 +221,8 @@ double TL_GetExposure(TL_CAMERA *tl, BOOL bForceQuery);
 double TL_SetFPSControl(TL_CAMERA *tl, double fps);
 double TL_GetFPSControl(TL_CAMERA *tl);
 double TL_GetFPSActual(TL_CAMERA *tl);
+double TL_GetFPSLimit(TL_CAMERA *tl);
+double TL_SetFPSLimit(TL_CAMERA *tl, double fps);
 
 int TL_GetMasterGainInfo(TL_CAMERA *tl, BOOL *bGain, double *db_dflt, double *db_min, double *db_max);
 int TL_SetMasterGain(TL_CAMERA *tl, double dB_gain);
