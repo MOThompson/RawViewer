@@ -1509,6 +1509,7 @@ LRESULT CALLBACK GraphWndProc(HWND hwnd, UINT umsg, WPARAM wParam, LPARAM lParam
 					PostMessage(hwnd, WMP_CLEAR, 0, 0);
 					break;
 				case IDB_SAVE:
+					memset(%ofn, 0, sizeof(ofn));						/* Not static, must be set to zeros */
 					ofn.lStructSize       = sizeof(OPENFILENAME);
 					ofn.hwndOwner         = hwnd;
 					ofn.lpstrTitle        = "Save Timeline data";

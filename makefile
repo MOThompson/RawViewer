@@ -18,9 +18,10 @@ SYSLIBS = user32.lib gdi32.lib comdlg32.lib comctl32.lib advapi32.lib vfw32.lib 
 
 ###########################################################################
 OBJS = RawViewer.obj win32ex.obj graph.obj timer.obj
+OBJ2 = Raw2.obj win32ex.obj graph.obj timer.obj
 ###########################################################################
 
-ALL: info.exe RawViewer.exe
+ALL: info.exe RawViewer.exe Raw2.exe
 
 INSTALL: c:\local.nt\bin\RawViewer.exe z:\lab\exes\RawViewer.exe
 
@@ -37,6 +38,9 @@ info.exe : info.obj
 	$(CC) -Fe$@ $** $(SYSLIBS)
 
 RawViewer.exe : $(OBJS) RawViewer.res
+	$(CC) -Fe$@ $** $(SYSLIBS)
+
+Raw2.exe : $(OBJ2) RawViewer.res
 	$(CC) -Fe$@ $** $(SYSLIBS)
 
 RawViewer.res : RawViewer.rc resource.h
